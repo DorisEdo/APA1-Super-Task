@@ -49,15 +49,24 @@ serve(async (req: Request) => {
     // Update an existing recipe (PUT)
     if (req.method === "PUT") {
       const { id, title, ingredients, instructions, category, image_url } = await req.json();
-
+    
       const { data, error } = await supabase
         .from("recipes")
-        .update({ title, ingredients, instructions, category, image_url })
+        .update({
+          title,
+          ingredients,
+          instructions,
+          category,
+          image_url
+        })
         .eq("id", id)
         .select();
-
+    
       if (error) throw error;
-      return new Response(JSON.stringify(data), { headers });
+    
+      return new Response(JSON.stringify(data), {
+        headers: { "Content-Type": "application/json" }
+      });
     }
 
     // Delete a recipe by ID (DELETE)
