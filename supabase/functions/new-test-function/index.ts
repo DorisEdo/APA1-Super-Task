@@ -1,64 +1,83 @@
-// Follow this setup guide to integrate the Deno language server with your editor:
-// https://deno.land/manual/getting_started/setup_your_environment
-// This enables autocomplete, go to definition, etc.
-
-// Setup type definitions for built-in Supabase Runtime APIs
-// import "jsr:@supabase/functions-js/edge-runtime.d.ts"
-
-// console.log("Hello from Functions!")
-
-// Deno.serve(async (req) => {
-//   const { name } = await req.json()
-//   const data = {
-//     message: `Hello ${name}!`,
-//   }
-
-//   return new Response(
-//     JSON.stringify(data),
-//     { headers: { "Content-Type": "application/json" } },
-//   )
-// })
-
-
-import "jsr:@supabase/functions-js/edge-runtime.d.ts";
+import { serve } from "https://deno.land/std@0.181.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
-console.log("Hello from Functions!");
-
-// Get Supabase credentials from environment variables
-const supabaseUrl = Deno.env.get("SUPABASE_URL");
-const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
-
-if (!supabaseUrl || !supabaseServiceRoleKey) {
-  console.error("❌ Missing Supabase environment variables!");
-}
-
 // Initialize Supabase client
-const supabase = createClient(supabaseUrl!, supabaseServiceRoleKey!);
+const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-Deno.serve(async (req) => {
-  const { name } = await req.json();
+// ✅ Exported handler for tests and server
+const handler = async (req: Request): Promise<Response> => {
+  const headers = { "Content-Type": "application/json" };
 
-  
-  if (name) {
-    const data = { message: `Hello ${name}!` };
-    return new Response(JSON.stringify(data), { headers: { "Content-Type": "application/json" } });
-  }
+  try {
+    const url = new URL(req.url);
 
-  // New: Fetch all recipes from the database
-  if (req.method === "GET") {
-    const { data: recipes, error } = await supabase.from("recipes").select("*");
+    // Subscribe to changes (optional for frontend)
+    if (req.method === "GET" && url.pathname.includes("subscribe")) {
+      supabase.channel("recipes-channel")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "recipes" },
+          (payload) => console.log("Change received!", payload)
+        )
+        .subscribe();
 
-    if (error) {
-      console.error("❌ Database Error:", error);
-      return new Response(JSON.stringify({ error: error.message }), { status: 500, headers: { "Content-Type": "application/json" } });
+      return new Response(JSON.stringify({ success: true, message: "Subscribed!" }), { headers });
     }
 
-    return new Response(JSON.stringify(recipes), { headers: { "Content-Type": "application/json" } });
-  }
+    // GET with specific columns
+    if (req.method === "GET" && url.searchParams.has("columns")) {
+      const columns = url.searchParams.get("columns") || "*";
+      const { data, error } = await supabase.from("recipes").select(columns);
+      if (error) throw error;
+      return new Response(JSON.stringify(data), { headers });
+    }
 
-  return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers: { "Content-Type": "application/json" } });
-});
+    // GET all recipes
+    if (req.method === "GET") {
+      const { data, error } = await supabase.from("recipes").select("*");
+      if (error) throw error;
+      return new Response(JSON.stringify(data), { headers });
+    }
+
+    // POST - Create new recipe
+    if (req.method === "POST") {
+      const body = await req.json();
+      const { data, error } = await supabase.from("recipes").insert([body]).select();
+      if (error) throw error;
+      return new Response(JSON.stringify(data), { headers });
+    }
+
+    // PUT - Update existing recipe
+    if (req.method === "PUT") {
+      const { id, ...fields } = await req.json();
+      const { data, error } = await supabase.from("recipes").update(fields).eq("id", id).select();
+      if (error) throw error;
+      return new Response(JSON.stringify(data), { headers });
+    }
+
+    // DELETE - Remove recipe by ID
+    if (req.method === "DELETE") {
+      const { id } = await req.json();
+      const { error } = await supabase.from("recipes").delete().eq("id", id);
+      if (error) throw error;
+      return new Response(JSON.stringify({ success: true, message: "Recipe deleted!" }), { headers });
+    }
+
+    // Unsupported method
+    return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers });
+
+  } catch (error: unknown) {
+    const errMessage = error instanceof Error ? error.message : String(error);
+    return new Response(JSON.stringify({ error: errMessage }), { status: 500, headers });
+  }
+};
+
+
+serve(handler);
+export { handler };
+
 
 /* To invoke locally:
 

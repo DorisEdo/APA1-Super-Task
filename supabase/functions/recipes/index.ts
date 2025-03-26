@@ -6,104 +6,77 @@ const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
 const supabaseServiceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
 const supabase = createClient(supabaseUrl, supabaseServiceRoleKey);
 
-serve(async (req: Request) => {
+// Exported handler for tests and server
+const handler = async (req: Request): Promise<Response> => {
   const headers = { "Content-Type": "application/json" };
 
   try {
-    // Fetch all recipes (GET)
-    if (req.method === "GET") {
-      let { data: recipes, error } = await supabase
-        .from("recipes")
-        .select("*");
+    const url = new URL(req.url);
 
-      if (error) throw error;
-      return new Response(JSON.stringify(recipes), { headers });
+    // Subscribe to changes (optional for frontend)
+    if (req.method === "GET" && url.pathname.includes("subscribe")) {
+      supabase.channel("recipes-channel")
+        .on(
+          "postgres_changes",
+          { event: "*", schema: "public", table: "recipes" },
+          (payload) => console.log("Change received!", payload)
+        )
+        .subscribe();
+
+      return new Response(JSON.stringify({ success: true, message: "Subscribed!" }), { headers });
     }
 
-    // Fetch specific recipe columns (GET with Query Params)
-    if (req.method === "GET" && req.url.includes("?columns=")) {
-      const queryParams = new URL(req.url).searchParams;
-      const columns = queryParams.get("columns") || "*"; // Defaults to all columns
-
-      let { data: recipes, error } = await supabase
-        .from("recipes")
-        .select(columns);
-
-      if (error) throw error;
-      return new Response(JSON.stringify(recipes), { headers });
-    }
-
-    // Insert a new recipe (POST)
-    if (req.method === "POST") {
-      const { title, ingredients, instructions, category, image_url } = await req.json();
-
-      const { data, error } = await supabase
-        .from("recipes")
-        .insert([{ title, ingredients, instructions, category, image_url }])
-        .select(); // Returns inserted row
-
+    // GET with specific columns
+    if (req.method === "GET" && url.searchParams.has("columns")) {
+      const columns = url.searchParams.get("columns") || "*";
+      const { data, error } = await supabase.from("recipes").select(columns);
       if (error) throw error;
       return new Response(JSON.stringify(data), { headers });
     }
 
-    // Update an existing recipe (PUT)
-    if (req.method === "PUT") {
-      const { id, title, ingredients, instructions, category, image_url } = await req.json();
-    
-      const { data, error } = await supabase
-        .from("recipes")
-        .update({
-          title,
-          ingredients,
-          instructions,
-          category,
-          image_url
-        })
-        .eq("id", id)
-        .select();
-    
+    // GET all recipes
+    if (req.method === "GET") {
+      const { data, error } = await supabase.from("recipes").select("*");
       if (error) throw error;
-    
-      return new Response(JSON.stringify(data), {
-        headers: { "Content-Type": "application/json" }
-      });
+      return new Response(JSON.stringify(data), { headers });
     }
 
-    // Delete a recipe by ID (DELETE)
+    // POST - Create new recipe
+    if (req.method === "POST") {
+      const body = await req.json();
+      const { data, error } = await supabase.from("recipes").insert([body]).select();
+      if (error) throw error;
+      return new Response(JSON.stringify(data), { headers });
+    }
+
+    // PUT - Update existing recipe
+    if (req.method === "PUT") {
+      const { id, ...fields } = await req.json();
+      const { data, error } = await supabase.from("recipes").update(fields).eq("id", id).select();
+      if (error) throw error;
+      return new Response(JSON.stringify(data), { headers });
+    }
+
+    // DELETE - Remove recipe by ID
     if (req.method === "DELETE") {
       const { id } = await req.json();
-
-      const { error } = await supabase
-        .from("recipes")
-        .delete()
-        .eq("id", id);
-
+      const { error } = await supabase.from("recipes").delete().eq("id", id);
       if (error) throw error;
       return new Response(JSON.stringify({ success: true, message: "Recipe deleted!" }), { headers });
     }
 
-    // Subscribe to real-time recipe changes (for the frontend)
-    if (req.method === "GET" && req.url.includes("subscribe")) {
-      const recipes = supabase.channel("recipes-channel")
-        .on(
-          "postgres_changes",
-          { event: "*", schema: "public", table: "recipes" },
-          (payload) => {
-            console.log("Change received!", payload);
-          }
-        )
-        .subscribe();
-
-      return new Response(JSON.stringify({ success: true, message: "Subscribed to recipe updates!" }), { headers });
-    }
-
-    // Handle unsupported methods
+    // Unsupported method
     return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405, headers });
 
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), { status: 500, headers });
+  } catch (error: unknown) {
+    const errMessage = error instanceof Error ? error.message : String(error);
+    return new Response(JSON.stringify({ error: errMessage }), { status: 500, headers });
   }
-});
+};
+
+serve(handler);
+export { handler };
+
 
 
 /* To invoke locally:
